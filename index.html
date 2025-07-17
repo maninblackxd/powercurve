@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Power Curve Drawer</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      min-height: 100vh;
+      overflow-y: scroll;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: auto;
+      font-family: Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    #mainContainer {
+      width: 100%;
+      max-width: 600px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    #canvasContainer {
+      width: 100%;
+      max-width: 600px;
+      margin: 10px 0;
+    }
+    canvas {
+      border: 1px solid black;
+      display: block;
+      max-width: 100%;
+      visibility: visible;
+    }
+    #instructions {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+      max-width: 600px;
+      min-height: 100vh;
+      padding-bottom: 40px;
+    }
+    select, input[type="number"] {
+      font-size: 18px;
+      padding: 10px;
+      margin: 10px 0;
+      width: 90%;
+      max-width: 300px;
+      border-radius: 5px;
+      touch-action: auto;
+    }
+    button {
+      font-size: 18px;
+      padding: 12px 20px;
+      margin: 10px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      width: 90%;
+      max-width: 300px;
+      touch-action: auto;
+    }
+    button:hover {
+      background-color: #45a049;
+    }
+    #areaOutput, #tariffOutput, #comparisonOutput, #historyOutput {
+      white-space: pre-wrap;
+      font-size: 16px;
+      width: 90%;
+      max-width: 600px;
+      margin: 10px 0;
+      touch-action: auto;
+    }
+  </style>
+</head>
+<body>
+  <div id="mainContainer">
+    <div id="canvasContainer"></div>
+    <div id="instructions">
+      <p>選擇電價模式：
+        <select id="tariffMode">
+          <option value="summer_three">夏月三段式</option>
+          <option value="summer_two">夏月二段式</option>
+          <option value="summer_batch">夏月批次</option>
+          <option value="nonSummer_three">非夏月三段式</option>
+          <option value="nonSummer_two">非夏月二段式</option>
+          <option value="nonSummer_batch">非夏月批次</option>
+        </select>
+      </p>
+      <p>輸入 Y 軸最大值 (kW)：
+        <input type="number" id="yMax" min="1" value="100">
+      </p>
+      <p>在畫布上拖曳（從左到右）繪製曲線。使用以下按鈕操作：</p>
+      <button id="saveCurve">保留曲線</button>
+      <button id="calculate">計算電費</button>
+      <button id="clearCanvas">清空畫布</button>
+      <button id="clearHistory">清空歷史紀錄</button>
+      <p id="areaOutput"></p>
+      <p id="tariffOutput"></p>
+      <p id="comparisonOutput"></p>
+      <p id="historyOutput">歷史紀錄：\n無歷史紀錄</p>
+    </div>
+  </div>
+  <script>
+    let points = [];
+    let savedCurves = [];
+    let yMax = 100;
+    let isDrawing = true;
+    let history = [];
+    const margin = 40;
+    let tariffMode = { season: 'summer', type: 'three' };
+    let canvasWidth = Math.min(window.innerWidth * 0.9, 600);
+    let canvasHeight = Math.min(window.innerWidth * 0.6, 400);
+    let lastXHour = -1;
+    let lastCalculationTime = 0;
+
+    // 電價定義
+    const tariffs = {
+      summer: {
+        three: [
+          { start: 0, end: 9, rate: 2.53 },
+          { start: 9, end: 16, rate: 5.85 },
+          { start: 16, end: 22, rate: 9.39 },
+          { start: 22, end: 24, rate: 5.85 }
+        ],
+        two: [
+          { start: 0, end: 9, rate: 2.71 },
+          { start: 9, end: 24, rate: 6.75 }
+        ],
+        batch: [
+          { start: 0, end: 15.5, rate: 3.18 },
+          { start: 15.5, end: 21.5, rate: 12.47 },
+          { start: 21.5, end: 24, rate: 3.18 }
+        ]
+      },
+      nonSummer: {
+        three: [
+          { start: 0, end: 6, rate: 2.32 },
+          { start: 6, end: 11, rate: 5.47 },
+          { start: 11, end: 14, rate: 2.32 },
+          { start: 14, end: 24, rate: 5.47 }
+        ],
+        two: [
+          { start: 0, end: 6, rate: 2.46 },
+          { start: 6, end: 11, rate: 6.37 },
+          { start: 11, end: 14, rate: 2.46 },
+          { start: 14, end: 24, rate: 6.37 }
+        ],
+        batch: [
+          { start: 0, end: 15.5, rate: 2.88 },
+          { start: 15.5, end: 21.5, rate: 11.79 },
+          { start: 21.5, end: 24, rate: 2.88 }
+        ]
+      }
+    };
+
+    // 曲線顏色
+    const curveColors = [
+      [0, 0, 255], // 藍色
+      [0, 128, 0]  // 綠色
+    ];
+
+    // 平日天數
+    const summerWeekdays = 107;
+    const nonSummerWeekdays = 144;
+
+    function setup() {
+      try {
+        if (typeof p5 === 'undefined') {
+          throw new Error('p5.js 未載入，請檢查網路連線');
+        }
+        let canvas = createCanvas(canvasWidth, canvasHeight);
+        canvas.parent('canvasContainer');
+        textAlign(CENTER, CENTER);
+        textSize(12);
+        console.log('畫布初始化成功，尺寸:', canvasWidth, 'x', canvasHeight);
+
+        // 按鈕和輸入框事件監聽器
+        const yMaxInput = document.getElementById('yMax');
+        const tariffModeSelect = document.getElementById('tariffMode');
+        const saveCurveBtn = document.getElementById('saveCurve');
+        const calculateBtn = document.getElementById('calculate');
+        const clearCanvasBtn = document.getElementById('clearCanvas');
+        const clearHistoryBtn = document.getElementById('clearHistory');
+
+        function addInputListeners(input, action, logMessage) {
+          input.addEventListener('change', (e) => {
+            console.log(logMessage, e.target.value);
+            action(e);
+          }, { passive: true });
+          input.addEventListener('touchstart', (e) => {
+            console.log(`Touchstart on ${input.id}`);
+            input.focus();
+          }, { passive: true });
+        }
+
+        function addButtonListeners(btn, action, logMessage) {
+          btn.addEventListener('click', (e) => {
+            console.log(logMessage, '點數:', points.length, 'isDrawing:', isDrawing);
+            action(e);
+          }, { passive: true });
+          btn.addEventListener('touchstart', (e) => {
+            console.log(`Touchstart on button: ${btn.id}`);
+            action(e);
+          }, { passive: true });
+        }
+
+        addInputListeners(yMaxInput, (e) => {
+          yMax = parseFloat(e.target.value) || 100;
+          if (yMax <= 0) yMax = 100;
+        }, 'Y 軸最大值改變:');
+
+        addInputListeners(tariffModeSelect, (e) => {
+          const [season, type] = e.target.value.split('_');
+          tariffMode = { season, type };
+        }, '電價模式改變:');
+
+        addButtonListeners(saveCurveBtn, () => {
+          if (points.length > 1 && !isDrawing) {
+            savedCurves.push({ points: [...points], color: curveColors[savedCurves.length % curveColors.length] });
+            points = [];
+            isDrawing = true;
+            lastXHour = -1;
+            document.getElementById('areaOutput').innerText = '';
+            document.getElementById('tariffOutput').innerText = '';
+            document.getElementById('comparisonOutput').innerText = '';
+          }
+        }, '點擊保留曲線');
+
+        addButtonListeners(calculateBtn, () => {
+          const now = Date.now();
+          if (now - lastCalculationTime > 500) {
+            lastCalculationTime = now;
+            calculateTariffAndHistory();
+          }
+        }, '點擊計算電費');
+
+        addButtonListeners(clearCanvasBtn, () => {
+          points = [];
+          savedCurves = [];
+          isDrawing = true;
+          lastXHour = -1;
+          document.getElementById('areaOutput').innerText = '';
+          document.getElementById('tariffOutput').innerText = '';
+          document.getElementById('comparisonOutput').innerText = '';
+        }, '點擊清空畫布');
+
+        addButtonListeners(clearHistoryBtn, () => {
+          history = [];
+          document.getElementById('historyOutput').innerText = '歷史紀錄：\n無歷史紀錄';
+          document.getElementById('comparisonOutput').innerText = '歷史紀錄已清空，下次計算將無前次結果可比較。';
+        }, '點擊清空歷史紀錄');
+      } catch (e) {
+        console.error('畫布初始化失敗:', e);
+        document.getElementById('areaOutput').innerText = `錯誤：無法初始化畫布，原因：${e.message}。請檢查網路或瀏覽器設置。`;
+      }
+    }
+
+    function draw() {
+      try {
+        background(255);
+        // 繪製網格
+        stroke(200);
+        for (let x = 0; x <= 24; x++) {
+          let px = map(x, 0, 24, margin, width - 10);
+          line(px, margin, px, height - margin);
+        }
+        for (let y = 0; y <= yMax; y += yMax / 10) {
+          let py = map(y, 0, yMax, height - margin, margin);
+          line(margin, py, width - 10, py);
+        }
+
+        // 繪製軸
+        stroke(0);
+        line(margin, height - margin, width - 10, height - margin);
+        line(margin, margin, margin, height - margin);
+
+        // 繪製 X 軸刻度
+        for (let x = 0; x <= 24; x++) {
+          let px = map(x, 0, 24, margin, width - 10);
+          text(x, px, height - margin + 15);
+        }
+
+        // 繪製 Y 軸刻度
+        for (let y = 0; y <= yMax; y += yMax / 10) {
+          let py = map(y, 0, yMax, height - margin, margin);
+          text(y.toFixed(0), margin - 15, py);
+        }
+
+        // 繪製軸標籤
+        text('Time (hours)', width / 2, height - margin + 35);
+        push();
+        translate(margin - 35, height / 2);
+        rotate(-PI / 2);
+        text('Power (kW)', 0, 0);
+        pop();
+
+        // 繪製儲存的曲線
+        for (let curve of savedCurves) {
+          stroke(curve.color[0], curve.color[1], curve.color[2]);
+          fill(curve.color[0], curve.color[1], curve.color[2], 50);
+          beginShape();
+          vertex(margin, height - margin);
+          for (let p of curve.points) {
+            vertex(p.x, p.y);
+          }
+          vertex(curve.points[curve.points.length - 1].x, height - margin);
+          endShape(CLOSE);
+
+          stroke(curve.color[0], curve.color[1], curve.color[2]);
+          noFill();
+          beginShape();
+          for (let p of curve.points) {
+            vertex(p.x, p.y);
+          }
+          endShape();
+          for (let p of curve.points) {
+            fill(255, 0, 0);
+            ellipse(p.x, p.y, 5, 5);
+          }
+        }
+
+        // 繪製當前曲線
+        if (points.length > 0) {
+          let currentColor = curveColors[savedCurves.length % curveColors.length];
+          stroke(currentColor[0], currentColor[1], currentColor[2]);
+          fill(currentColor[0], currentColor[1], currentColor[2], 50);
+          beginShape();
+          vertex(margin, height - margin);
+          for (let p of points) {
+            vertex(p.x, p.y);
+          }
+          if (!isDrawing) {
+            vertex(points[points.length - 1].x, height - margin);
+          }
+          endShape(CLOSE);
+
+          stroke(currentColor[0], currentColor[1], currentColor[2]);
+          noFill();
+          beginShape();
+          for (let p of points) {
+            vertex(p.x, p.y);
+          }
+          endShape();
+          for (let p of points) {
+            fill(255, 0, 0);
+            ellipse(p.x, p.y, 5, 5);
+          }
+        }
+      } catch (e) {
+        console.error('繪製畫布失敗:', e);
+        document.getElementById('areaOutput').innerText = `錯誤：繪製畫布失敗，原因：${e.message}`;
+      }
+    }
+
+    // 共用繪圖邏輯
+    function startDrawing(x, y, isTouch) {
+      try {
+        if (isDrawing && x >= margin && x <= width - 10 && y >= margin && y <= height - margin) {
+          let xHour = map(x, margin, width - 10, 0, 24);
+          if (points.length === 0 || xHour > lastXHour) {
+            points.push({ x: x, y: y, xHour: xHour, yKW: map(y, height - margin, margin, 0, yMax) });
+            lastXHour = xHour;
+            console.log(`${isTouch ? 'Touch' : 'Mouse'} started, xHour:`, xHour);
+            return true;
+          }
+        }
+        return false;
+      } catch (e) {
+        console.error('開始繪圖失敗:', e);
+        document.getElementById('areaOutput').innerText = `錯誤：開始繪圖失敗，原因：${e.message}`;
+        return false;
+      }
+    }
+
+    function continueDrawing(x, y, isTouch) {
+      try {
+        if (isDrawing && x >= margin && x <= width - 10 && y >= margin && y <= height - margin) {
+          let xHour = map(x, margin, width - 10, 0, 24);
+          if (points.length === 0 || (xHour > lastXHour && Math.abs(xHour - lastXHour) >= 0.1)) {
+            points.push({ x: x, y: y, xHour: xHour, yKW: map(y, height - margin, margin, 0, yMax) });
+            lastXHour = xHour;
+            console.log(`${isTouch ? 'Touch' : 'Mouse'} moved, xHour:`, xHour, 'points:', points.length);
+            return true;
+          }
+        }
+        return false;
+      } catch (e) {
+        console.error('繼續繪圖失敗:', e);
+        document.getElementById('areaOutput').innerText = `錯誤：繼續繪圖失敗，原因：${e.message}`;
+        return false;
+      }
+    }
+
+    function endDrawing(isTouch) {
+      try {
+        if (points.length > 1) {
+          isDrawing = false;
+          console.log(`${isTouch ? 'Touch' : 'Mouse'} ended, isDrawing:`, isDrawing, 'points:', points.length);
+        }
+      } catch (e) {
+        console.error('結束繪圖失敗:', e);
+        document.getElementById('areaOutput').innerText = `錯誤：結束繪圖失敗，原因：${e.message}`;
+      }
+    }
+
+    // 觸控事件
+    function touchStarted(e) {
+      if (startDrawing(mouseX, mouseY, true)) {
+        e.preventDefault();
+      }
+      return true;
+    }
+
+    function touchMoved(e) {
+      if (continueDrawing(mouseX, mouseY, true)) {
+        e.preventDefault();
+      }
+      return true;
+    }
+
+    function touchEnded(e) {
+      endDrawing(true);
+      return true;
+    }
+
+    // 滑鼠事件
+    function mousePressed() {
+      startDrawing(mouseX, mouseY, false);
+      return true;
+    }
+
+    function mouseDragged() {
+      continueDrawing(mouseX, mouseY, false);
+      return true;
+    }
+
+    function mouseReleased() {
+      endDrawing(false);
+      return true;
+    }
+
+    // 線性插值函數
+    function interpolatePower(t, points) {
+      if (points.length === 0) return 0;
+      if (points.length === 1) return points[0].yKW;
+      for (let i = 0; i < points.length - 1; i++) {
+        let x1 = points[i].xHour;
+        let x2 = points[i + 1].xHour;
+        if (t >= x1 && t <= x2) {
+          let y1 = points[i].yKW;
+          let y2 = points[i + 1].yKW;
+          let fraction = (t - x1) / (x2 - x1);
+          return y1 + (y2 - y1) * fraction;
+        }
+      }
+      if (t < points[0].xHour) return points[0].yKW;
+      return points[points.length - 1].yKW;
+    }
+
+    // 計算分時段電費
+    function calculateTariff(points, season, type) {
+      let currentTariffs = tariffs[season][type];
+      let totalCost = 0;
+      let segmentAreas = [];
+
+      for (let tariff of currentTariffs) {
+        let area = 0;
+        const step = 0.1;
+        for (let t = tariff.start; t < tariff.end; t += step) {
+          let tNext = Math.min(t + step, tariff.end);
+          let y1 = interpolatePower(t, points);
+          let y2 = interpolatePower(tNext, points);
+          area += (tNext - t) * (y1 + y2) / 2;
+        }
+        let cost = area * tariff.rate;
+        totalCost += cost;
+        segmentAreas.push(area);
+      }
+
+      totalCost = Math.round(totalCost);
+      let tariffDetails = `當日流動電費：${totalCost} 元\n`;
+      return { tariffDetails, totalCost, segmentAreas };
+    }
+
+    // 計算電費並更新歷史紀錄
+    function calculateTariffAndHistory() {
+      try {
+        console.log('執行 calculateTariffAndHistory，點數:', points.length, 'isDrawing:', isDrawing);
+        if (points.length > 1) {
+          isDrawing = false;
+          let xHours = points.map(p => p.xHour);
+          let yKWs = points.map(p => p.yKW);
+
+          // 計算總面積
+          let totalArea = 0;
+          for (let i = 0; i < points.length - 1; i++) {
+            totalArea += (xHours[i + 1] - xHours[i]) * (yKWs[i] + yKWs[i + 1]) / 2;
+          }
+          totalArea = Math.round(totalArea);
+          document.getElementById('areaOutput').innerText = `當日用電度數：${totalArea} kW·h`;
+
+          // 定義所有模式
+          const modeNames = {
+            two: '二段式',
+            three: '三段式',
+            batch: '批次'
+          };
+          const allModes = ['two', 'three', 'batch'];
+
+          // 計算當前模式電費
+          let tariffDetails = '當前模式電費：\n';
+          const currentModeName = modeNames[tariffMode.type];
+          tariffDetails += `${currentModeName}（夏月）：\n`;
+          let currentSummer = calculateTariff(points, 'summer', tariffMode.type);
+          tariffDetails += currentSummer.tariffDetails;
+          const summerTotalCost = currentSummer.totalCost;
+
+          tariffDetails += `${currentModeName}（非夏月）：\n`;
+          let currentNonSummer = calculateTariff(points, 'nonSummer', tariffMode.type);
+          tariffDetails += currentNonSummer.tariffDetails;
+          const nonSummerTotalCost = currentNonSummer.totalCost;
+
+          // 計算年度電費
+          const annualCost = Math.round(summerTotalCost * summerWeekdays + nonSummerTotalCost * nonSummerWeekdays);
+          tariffDetails += `以114年平日天數為例(夏月:${summerWeekdays}天，非夏月${nonSummerWeekdays}天)，一整年平日流動電費總金額為: ${annualCost} 元\n\n`;
+
+          // 計算其他模式電費
+          tariffDetails += '其他模式電費：\n';
+          const otherModes = allModes.filter(mode => mode !== tariffMode.type);
+          for (let mode of otherModes) {
+            const modeName = modeNames[mode];
+            tariffDetails += `${modeName}（夏月）：\n`;
+            let otherSummer = calculateTariff(points, 'summer', mode);
+            tariffDetails += otherSummer.tariffDetails;
+            const otherSummerTotalCost = otherSummer.totalCost;
+
+            tariffDetails += `${modeName}（非夏月）：\n`;
+            let otherNonSummer = calculateTariff(points, 'nonSummer', mode);
+            tariffDetails += otherNonSummer.tariffDetails;
+            const otherNonSummerTotalCost = otherNonSummer.totalCost;
+
+            const otherAnnualCost = Math.round(otherSummerTotalCost * summerWeekdays + otherNonSummerTotalCost * nonSummerWeekdays);
+            tariffDetails += `以114年平日天數為例(夏月:${summerWeekdays}天，非夏月${nonSummerWeekdays}天)，一整年平日流動電費總金額為: ${otherAnnualCost} 元\n\n`;
+          }
+
+          document.getElementById('tariffOutput').innerText = tariffDetails;
+
+          // 儲存當前模式結果到歷史紀錄
+          const currentResult = calculateTariff(points, tariffMode.season, tariffMode.type);
+          const record = {
+            points: [...points],
+            totalArea: totalArea,
+            segmentAreas: currentResult.segmentAreas,
+            totalCost: currentResult.totalCost,
+            annualCost: annualCost,
+            tariffMode: tariffMode,
+            timestamp: Date.now()
+          };
+          if (history.length === 0 || 
+              history[history.length - 1].totalArea !== totalArea || 
+              history[history.length - 1].timestamp < record.timestamp - 500) {
+            console.log('添加歷史紀錄:', record);
+            history.push(record);
+          } else {
+            console.log('跳過重複歷史紀錄:', record);
+          }
+
+          // 更新歷史紀錄顯示
+          let historyText = '歷史紀錄：\n';
+          if (history.length === 0) {
+            historyText += '無歷史紀錄\n';
+          } else {
+            history.forEach((record, index) => {
+              const modeText = `${record.tariffMode.season === 'summer' ? '夏月' : '非夏月'} ${modeNames[record.tariffMode.type]}`;
+              historyText += `紀錄 ${index + 1}（${modeText}）：當日用電度數 ${record.totalArea} kW·h，當日流動電費 ${record.totalCost} 元，年度電費 ${record.annualCost} 元\n`;
+            });
+          }
+          document.getElementById('historyOutput').innerText = historyText;
+
+          // 比較與前一次結果
+          if (history.length > 1) {
+            let prev = history[history.length - 2];
+            let curr = history[history.length - 1];
+            let areaDiff = curr.totalArea - prev.totalArea;
+            let costDiff = curr.totalCost - prev.totalCost;
+            let comparisonText = `與前一次比較：\n`;
+            comparisonText += `當日用電度數差異：${areaDiff} kW·h (${areaDiff >= 0 ? '+' : ''}${areaDiff})\n`;
+            comparisonText += `當日流動電費差異：${costDiff} 元 (${costDiff >= 0 ? '+' : ''}${costDiff})\n`;
+            document.getElementById('comparisonOutput').innerText = comparisonText;
+          } else {
+            document.getElementById('comparisonOutput').innerText = '這是第一次計算，無前次結果可比較。';
+          }
+
+          // 自動滾動到電費資訊
+          document.getElementById('tariffOutput').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+          document.getElementById('areaOutput').innerText = '錯誤：請繪製曲線（至少兩個點）';
+          document.getElementById('tariffOutput').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      } catch (e) {
+        console.error('計算電費失敗:', e);
+        document.getElementById('areaOutput').innerText = `錯誤：計算電費失敗，原因：${e.message}`;
+        document.getElementById('tariffOutput').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+  </script>
+</body>
+</html>
